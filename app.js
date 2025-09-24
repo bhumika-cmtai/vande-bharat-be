@@ -14,8 +14,7 @@ console.log(
 // ✅ CORS middleware (corrected and complete)
 const allowedOrigins = [
   "http://localhost:3000",
-  "https://VandeBharat.vercel.app",
-  "https://www.VandeBharat.org"
+  "https://vande-bharat-fe.vercel.app",
 ];
 
 app.use(cors({
