@@ -369,47 +369,77 @@ const removeFromCart = asyncHandler(async (req, res) => {
   res.status(200).json(new ApiResponse(200, user.cart, "Item removed from cart"));
 });
 
-
 const updateCartQuantity = asyncHandler(async (req, res) => {
   const { cartItemId } = req.params;
   const { quantity } = req.body;
-  console.log(cartItemId)
-  if (!quantity || quantity < 1) throw new ApiError(400, "A valid quantity is required.");
-  if (!cartItemId) throw new ApiError(400, "Cart Item ID is required.");
+
+  if (!quantity || quantity < 1) {
+    throw new ApiError(400, "A valid quantity is required.");
+  }
+  if (!cartItemId) {
+    throw new ApiError(400, "Cart Item ID is required.");
+  }
+  if (!mongoose.Types.ObjectId.isValid(cartItemId)) {
+    throw new ApiError(400, "Invalid Cart Item ID format.");
+  }
 
   const user = await User.findById(req.user._id);
-  if (!user) throw new ApiError(404, "User not found");
+  if (!user) {
+    throw new ApiError(404, "User not found");
+  }
 
-  const cartItem = user.cart.id(cartItemId); // .id() sub-document dhoondne ka aasan tareeka hai
-  if (!cartItem) throw new ApiError(404, "Item not found in cart.");
+  const cartItem = user.cart.id(cartItemId);
+  if (!cartItem) {
+    throw new ApiError(404, "Item not found in cart.");
+  }
 
   const product = await Product.findById(cartItem.product);
+
+  // --- SAHI LOGIC YAHAN HAI ---
   if (!product) {
-    user.cart.id(cartItemId).remove(); // Agar product delete ho gaya hai, to cart se hata do
-    await user.save();
+    // Agar product maujood nahi hai, to $pull ka istemaal karke item ko hataayein
+    await User.updateOne(
+      { _id: req.user._id },
+      { $pull: { cart: { _id: cartItemId } } }
+    );
     throw new ApiError(404, "Product no longer exists and has been removed from your cart.");
   }
 
-  const variant = product.variants.find(v => v.sku_variant === cartItem.sku_variant);
-  if (!variant) {
-    user.cart.id(cartItemId).remove();
-    await user.save();
-    throw new ApiError(404, "This product variant no longer exists and has been removed from your cart.");
+  // Stock check
+  let stock = 0;
+  if (cartItem.sku_variant) {
+    const variant = product.variants.find(v => v.sku_variant === cartItem.sku_variant);
+    if (!variant) {
+      // Agar variant maujood nahi hai, to item ko hataayein
+      await User.updateOne(
+        { _id: req.user._id },
+        { $pull: { cart: { _id: cartItemId } } }
+      );
+      throw new ApiError(404, "This product variant no longer exists and has been removed from your cart.");
+    }
+    stock = variant.stock_quantity;
+  } else {
+    stock = product.stock_quantity;
   }
 
-  if (variant.stock < quantity) {
-    throw new ApiError(400, `Not enough stock. Only ${variant.stock} items available.`);
+  if (stock < quantity) {
+    throw new ApiError(400, `Not enough stock. Only ${stock} items available.`);
   }
 
+  // Quantity update karein
   cartItem.quantity = quantity;
-  await user.save();
+  await user.save({ validateBeforeSave: false });
 
-  const updatedCart = await user.populate({
-    path: "cart.product",
-    select: "name slug"
-  });
+  // Update kiya hua cart wapas bhejein
+  const updatedUser = await User.findById(req.user._id)
+    .populate({
+      path: "cart.product",
+      select: "name slug images"
+    })
+    .select("cart")
+    .lean();
 
-  res.status(200).json(new ApiResponse(200, updatedCart.cart, "Cart quantity updated"));
+  res.status(200).json(new ApiResponse(200, updatedUser.cart, "Cart quantity updated"));
 });
 
 
@@ -495,8 +525,20 @@ const placeCodOrder = asyncHandler(async (req, res) => {
       if (couponCode) {
           const coupon = await Coupon.findOne({ code: couponCode.toUpperCase(), status: "active" }).session(session);
           if (coupon) {
+            if (coupon.code === 'FIRST') { // Apne first order coupon code se replace karein
+              if (user.firstorder) {
+                  // Agar user ka first order hai, to discount apply karein
+                  couponDiscount = (subtotal * coupon.discountPercentage) / 100;
+                  validatedCouponCode = coupon.code;
+              } else {
+                  // Agar first order nahi hai, to error dein
+                  throw new ApiError(403, "This coupon is valid only for your first order.");
+              }
+          } else {
+              // Dusre normal coupons ke liye
               couponDiscount = (subtotal * coupon.discountPercentage) / 100;
               validatedCouponCode = coupon.code;
+          }
           }
       }
 
@@ -539,8 +581,9 @@ const placeCodOrder = asyncHandler(async (req, res) => {
       // 1. Deduct points that the user redeemed
       if (pointsToApply > 0) {
           user.wallet -= pointsToApply;
+          
       }
-
+      user.firstorder = false;
       // 2. Award new points based on the "near-miss" rule
       const finalWalletConfig = await WalletConfig.findOne().lean().session(session);
       // Ensure config and rules exist and are sorted descending by minSpend

@@ -129,6 +129,7 @@ const userSchema = new mongoose.Schema(
     forgotPasswordExpiry: { type: Date, select: false },
     refreshToken: { type: String, select: false },
     wallet: {type: Number, default: 10},
+    firstorder: {type: Boolean, default: true}
   },
   { timestamps: true }
 );

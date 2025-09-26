@@ -195,10 +195,20 @@ export const verifyPaymentAndPlaceOrder = asyncHandler(async (req, res) => {
           let validatedCouponCode = null;
           if (couponCode) {
               const coupon = await Coupon.findOne({ code: couponCode.toUpperCase(), status: "active" }).session(session);
-              if (coupon) {
-                  couponDiscount = (subtotal * coupon.discountPercentage) / 100;
-                  validatedCouponCode = coupon.code;
-              }
+              if (coupon.code === 'FIRSTORDER') { // Apne first order coupon code se replace karein
+                if (user.firstorder) {
+                    // Agar user ka first order hai, to discount apply karein
+                    couponDiscount = (subtotal * coupon.discountPercentage) / 100;
+                    validatedCouponCode = coupon.code;
+                } else {
+                    // Agar first order nahi hai, to error dein
+                    throw new ApiError(403, "This coupon is valid only for your first order.");
+                }
+            } else {
+                // Dusre normal coupons ke liye
+                couponDiscount = (subtotal * coupon.discountPercentage) / 100;
+                validatedCouponCode = coupon.code;
+            }
           }
     
           let walletDiscount = 0;
@@ -237,8 +247,26 @@ export const verifyPaymentAndPlaceOrder = asyncHandler(async (req, res) => {
         orderStatus: "Processing",
     }], { session });
 
+    if (pointsToApply > 0) {
+      user.wallet -= pointsToApply;
+      
+  }
+    user.firstorder = false;
+    // 2. Award new points based on the "near-miss" rule
+    const finalWalletConfig = await WalletConfig.findOne().lean().session(session);
+    // Ensure config and rules exist and are sorted descending by minSpend
+    if (finalWalletConfig?.rewardRules?.length > 0) {
+        // Find the highest milestone that the user is eligible for (or is within ₹5 of)
+        const applicableRule = finalWalletConfig.rewardRules.find(rule => totalPrice >= (rule.minSpend - 5));
+        
+        if (applicableRule) {
+            user.wallet += applicableRule.pointsAwarded;
+        }
+    }
+
     await Product.bulkWrite(stockUpdateOperations, { session });
     user.cart = [];
+    
     await user.save({ session, validateBeforeSave: false });
 
     await session.commitTransaction();
