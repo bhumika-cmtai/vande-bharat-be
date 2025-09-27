@@ -125,8 +125,8 @@ export const sendBulkEmail = async (emailList, subject, message, imageUrl) => {
 };
 
 const generateOrderConfirmationHTML = (order) => {
-  const appName = process.env.APP_NAME || 'Vande Bharat';
-  const logoUrl = 'https://testbucketecom12.s3.eu-north-1.amazonaws.com/products/1758225456056_ac5408fe41cf633c6c10e5afac303e74.jpg';
+  const appName = 'Vande Bharat';
+  const logoUrl = '';
   const instagramUrl = '';
 
   const orderItemsHTML = order.orderItems.map(item => {

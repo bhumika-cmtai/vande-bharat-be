@@ -31,7 +31,7 @@ const registerUser = asyncHandler(async (req, res) => {
 
   const emailHtml = `
   <div style="font-family: sans-serif; text-align: center; padding: 20px;">
-    <h2>Welcome to Velvetvibe!</h2>
+    <h2>Welcome to Vande Bharat!</h2>
     <p>Hi ${name},</p>
     <p>Thank you for registering. Please use the following OTP to verify your email address. This OTP is valid for 10 minutes.</p>
     <p style="font-size: 24px; font-weight: bold; letter-spacing: 2px; background-color: #f0f0f0; padding: 10px 20px; border-radius: 5px; display: inline-block;">
@@ -75,21 +75,20 @@ const verifyOtp = asyncHandler(async (req, res) => {
     console.error("OTP verification failed: Invalid or expired OTP for email", email);
     throw new ApiError(400, "Invalid or expired OTP.");
   }
-  
   user.isVerified = true;
   user.otp = undefined;
   user.otpExpiry = undefined;
   await user.save({ validateBeforeSave: false });
   
+
   const accessToken = user.generateAccessToken();
   console.log("this is access token ", accessToken)
   const loggedInUser = await User.findById(user._id).select("-password -refreshToken");
 
-  // FIX: Make cookie options consistent with loginUser
   const options = {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
-    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax", // Fixed this line
+    sameSite: "none" 
   };
 
   return res
