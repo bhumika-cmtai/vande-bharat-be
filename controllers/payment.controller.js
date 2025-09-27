@@ -12,6 +12,8 @@ import Product from "../models/product.model.js";
 import { Coupon } from "../models/coupon.model.js";
 import { sendOrderConfirmationEmail } from "../services/emailService.js";
 import { WalletConfig } from "../models/walletConfig.model.js";
+import { TaxConfig } from "../models/taxConfig.model.js";
+
 
 const razorpay = new Razorpay({
   key_id: process.env.RAZORPAY_KEY_ID,
@@ -19,24 +21,24 @@ const razorpay = new Razorpay({
 });
 
 // Helper function for Razorpay refunds
-const initiateRazorpayRefund = async (paymentId, amountInPaisa) => {
-  try {
-    return await razorpay.payments.refund(paymentId, {
-      amount: amountInPaisa,
-      speed: "normal",
-      notes: { reason: "Order cancelled by customer or admin." },
-    });
-  } catch (error) {
-    if (error.error?.description?.includes("already been fully refunded")) {
-      return {
-        status: "processed",
-        id: "already_refunded",
-        amount: amountInPaisa,
-      };
-    }
-    throw new Error(`Refund failed: ${error.error ? JSON.stringify(error.error) : error.message}`);
-  }
-};
+// const initiateRazorpayRefund = async (paymentId, amountInPaisa) => {
+//   try {
+//     return await razorpay.payments.refund(paymentId, {
+//       amount: amountInPaisa,
+//       speed: "normal",
+//       notes: { reason: "Order cancelled by customer or admin." },
+//     });
+//   } catch (error) {
+//     if (error.error?.description?.includes("already been fully refunded")) {
+//       return {
+//         status: "processed",
+//         id: "already_refunded",
+//         amount: amountInPaisa,
+//       };
+//     }
+//     throw new Error(`Refund failed: ${error.error ? JSON.stringify(error.error) : error.message}`);
+//   }
+// };
 
 
 // API Controllers
@@ -227,7 +229,11 @@ export const verifyPaymentAndPlaceOrder = asyncHandler(async (req, res) => {
     
           // --- Final Price Calculation (Correct) ---
           const shippingPrice = 90;
-          const taxRate = 0.03;
+          const taxConfig = await TaxConfig.findOne().session(session).lean();
+      
+      // 2. Use the fetched rate, or a default fallback if it doesn't exist
+      const taxRate = taxConfig ? taxConfig.rate : 0.03; // e.g., 0.03 for 3%
+
           const taxPrice = (subtotal - totalDiscount) > 0 ? (subtotal - totalDiscount) * taxRate : 0;
           const totalPrice = (subtotal - totalDiscount) + shippingPrice + taxPrice;
 
@@ -284,68 +290,134 @@ export const verifyPaymentAndPlaceOrder = asyncHandler(async (req, res) => {
   }
 });
 
-export const cancelOrder = asyncHandler(async (req, res) => {
-    // --- REWRITTEN to restore stock for both simple and variable products ---
-    const { orderId } = req.params;
-    if (!mongoose.Types.ObjectId.isValid(orderId)) throw new ApiError(400, "Invalid Order ID.");
-
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    try {
-        const order = await Order.findById(orderId).session(session);
-        if (!order) throw new ApiError(404, "Order not found.");
-
-        const isOwner = order.user.toString() === req.user._id.toString();
-        const isAdmin = req.user.role === "admin";
-        if (!isOwner && !isAdmin) throw new ApiError(403, "Not authorized to cancel this order.");
-
-        if (["Shipped", "Delivered", "Cancelled"].includes(order.orderStatus)) {
-            throw new ApiError(400, `Order is already ${order.orderStatus.toLowerCase()} and cannot be cancelled.`);
-        }
-
-        // Refund logic (remains the same)
-        if (order.paymentMethod === "Razorpay" && order.paymentId) {
-            const refund = await initiateRazorpayRefund(order.paymentId, Math.round(order.totalPrice * 100));
-            order.refundDetails = { /* ... */ };
-        }
-
-        // Prepare stock restoration operations for all items in the order
-        const stockRestoreOps = order.orderItems.map((item) => {
-            if (item.sku_variant) { // If it's a variant product
-                return {
-                    updateOne: {
-                        filter: { _id: item.product_id, "variants.sku_variant": item.sku_variant },
-                        update: { $inc: { "variants.$.stock_quantity": item.quantity } },
-                    },
-                };
-            } else { // If it's a simple product
-                return {
-                    updateOne: {
-                        filter: { _id: item.product_id },
-                        update: { $inc: { stock_quantity: item.quantity } },
-                    },
-                };
-            }
-        });
-
-        if (stockRestoreOps.length > 0) {
-            await Product.bulkWrite(stockRestoreOps, { session });
-        }
-
-        order.orderStatus = "Cancelled";
-        order.cancellationDetails = {
-            cancelledBy: isAdmin ? "Admin" : "User",
-            reason: req.body.reason || "Cancelled by request",
-            cancellationDate: new Date(),
-        };
-
-        const updatedOrder = await order.save({ session });
-        await session.commitTransaction();
-        res.status(200).json(new ApiResponse(200, updatedOrder, "Order has been cancelled and stock restored."));
-    } catch (error) {
-        await session.abortTransaction();
-        throw error;
-    } finally {
-        session.endSession();
+/**
+ * @helper_function - To safely initiate refunds via Razorpay API.
+ * Yeh function Razorpay se refund process karta hai.
+ */
+const initiateRazorpayRefund = async (paymentId, amountInPaisa) => {
+  try {
+    // Initiate refund using the Razorpay API
+    return await razorpay.payments.refund(paymentId, {
+      amount: amountInPaisa,
+      speed: "normal", // You can change this to 'optimum' if enabled on your account
+      notes: { reason: "Order cancelled by customer or admin." },
+    });
+  } catch (error) {
+    // Handle the case where the payment was already refunded
+    if (error.error?.description?.includes("already been fully refunded")) {
+      console.warn(`Payment ${paymentId} has already been fully refunded.`);
+      return {
+        status: "processed",
+        id: "already_refunded", // Use a custom identifier
+        amount: amountInPaisa,
+      };
     }
+    // Throw an error if refund fails for any other reason
+    throw new Error(`Razorpay refund failed: ${error.error ? JSON.stringify(error.error) : error.message}`);
+  }
+};
+
+
+/**
+ * @api_controller - To cancel an order by User or Admin.
+ * Yeh main API hai order cancel karne ke liye.
+ */
+export const cancelOrder = asyncHandler(async (req, res) => {
+  const { orderId } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(orderId)) {
+    throw new ApiError(400, "Invalid Order ID format.");
+  }
+
+  // Start a Mongoose session for database transaction
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const order = await Order.findById(orderId).session(session);
+
+    if (!order) {
+      throw new ApiError(404, "Order not found.");
+    }
+
+    // --- SECURITY CHECK ---
+    // Check if the requester is the order owner or an admin
+    const isOwner = order.user.toString() === req.user._id.toString();
+    // Assuming you have a 'role' field in your user model
+    const isAdmin = req.user.role === "admin"; 
+
+    if (!isOwner && !isAdmin) {
+      throw new ApiError(403, "You are not authorized to cancel this order.");
+    }
+
+    // --- STATUS VALIDATION ---
+    // Check if the order is already in a final state
+    if (["Shipped", "Delivered", "Cancelled"].includes(order.orderStatus)) {
+      throw new ApiError(400, `Order is already ${order.orderStatus.toLowerCase()} and cannot be cancelled.`);
+    }
+
+    // --- REFUND LOGIC ---
+    // If the payment was made via Razorpay, process a refund
+    if (order.paymentMethod === "Razorpay" && order.paymentId) {
+      const refund = await initiateRazorpayRefund(order.paymentId, Math.round(order.totalPrice * 100));
+      
+      // Store refund details in the order document
+      order.refundDetails = {
+        refundId: refund.id,
+        amount: refund.amount / 100, // Convert from paisa to rupees
+        status: refund.status || "processed",
+        createdAt: new Date(),
+      };
+    }
+
+    // --- STOCK RESTORATION LOGIC ---
+    // Prepare stock update operations for all items in the order
+    const stockRestoreOps = order.orderItems.map((item) => {
+      if (item.sku_variant) {
+        // This is a VARIABLE product (e.g., with size/color)
+        return {
+          updateOne: {
+            filter: { _id: item.product_id, "variants.sku_variant": item.sku_variant },
+            update: { $inc: { "variants.$.stock_quantity": item.quantity } },
+          },
+        };
+      } else {
+        // This is a SIMPLE product
+        return {
+          updateOne: {
+            filter: { _id: item.product_id },
+            update: { $inc: { "stock_quantity": item.quantity } },
+          },
+        };
+      }
+    });
+
+    // Execute all stock updates in a single database call
+    if (stockRestoreOps.length > 0) {
+      await Product.bulkWrite(stockRestoreOps, { session });
+    }
+
+    // --- UPDATE ORDER STATUS ---
+    // Finally, update the order status and cancellation details
+    order.orderStatus = "Cancelled";
+    order.cancellationDetails = {
+      cancelledBy: isAdmin ? "Admin" : "User",
+      reason: req.body.reason || "Cancelled by request",
+      cancellationDate: new Date(),
+    };
+
+    const updatedOrder = await order.save({ session });
+
+    // If all operations were successful, commit the transaction
+    await session.commitTransaction();
+
+    res.status(200).json(new ApiResponse(200, updatedOrder, "Order has been cancelled and stock restored successfully."));
+
+  } catch (error) {
+    // If any step fails, abort the entire transaction
+    await session.abortTransaction();
+    throw error; // Re-throw the error to be handled by your global error handler
+  } finally {
+    // Always end the session to release resources
+    session.endSession();
+  }
 });

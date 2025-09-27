@@ -6,10 +6,9 @@ import { adminMiddleware } from "../middlewares/admin.middleware.js";
 const router = Router();
 
 // --- ADMIN-ONLY ROUTES ---
-router.use(authMiddleware, adminMiddleware);
+// router.use(authMiddleware, adminMiddleware);
 
-router.route("/config")
-    .get(getTaxConfig)
-    .put(setTaxConfig);
+router.route("/config").get(authMiddleware, getTaxConfig)
+router.route("/config").put(authMiddleware, adminMiddleware, setTaxConfig);
 
 export default router;

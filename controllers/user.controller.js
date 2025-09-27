@@ -8,6 +8,8 @@ import { Coupon } from "../models/coupon.model.js";
 import { uploadOnS3, deleteFromS3, getObjectKeyFromUrl } from "../config/s3.js";
 import { sendOrderConfirmationEmail } from "../services/emailService.js";
 import { WalletConfig } from "../models/walletConfig.model.js";
+import { TaxConfig } from "../models/taxConfig.model.js";
+
 
 import fs from "fs";
 import mongoose from "mongoose";
@@ -558,7 +560,10 @@ const placeCodOrder = asyncHandler(async (req, res) => {
 
       // --- Final Price Calculation (Correct) ---
       const shippingPrice = 90;
-      const taxRate = 0.03;
+      const taxConfig = await TaxConfig.findOne().session(session).lean();
+      
+      // 2. Use the fetched rate, or a default fallback if it doesn't exist
+      const taxRate = taxConfig ? taxConfig.rate : 0.03; // e.g., 0.03 for 3%
       const taxPrice = (subtotal - totalDiscount) > 0 ? (subtotal - totalDiscount) * taxRate : 0;
       const totalPrice = (subtotal - totalDiscount) + shippingPrice + taxPrice;
 

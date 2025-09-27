@@ -16,6 +16,7 @@ import taxRouter from './tax.routes.js';
 import categoryRouter from './category.routes.js'
 import blogRouter from './blog.routes.js'
 import testimonialRouter from './testimonial.routes.js'
+import grievanceRouter from './grievance.routes.js'
 const router = Router();
 router.use("/auth", authRouter);
 router.use("/users", userRouter);
@@ -34,6 +35,8 @@ router.use("/tax", taxRouter);
 router.use("/categories", categoryRouter);
 router.use("/blogs", blogRouter);
 router.use("/testimonials", testimonialRouter);
+router.use("/grievances", grievanceRouter);
+
 
 
 export default router;
